@@ -1,0 +1,445 @@
+import sys
+sys.path.append('/home/qa/BlingTradePlatform/strategy/MomentumLearning/')
+import Utils
+import pandas as pd
+import yfinance as yf
+import requests
+import json
+import os
+from MarketUniverse import MarketUniverse
+from IndicatorCalculator import IndicatorAdder  # Fix the import
+from DataFrameWindowFilter import DataWindowFilter
+import mplfinance as mpf
+import plotly.graph_objects as go
+from bokeh.plotting import figure, show
+from bokeh.models import ColumnDataSource
+from bokeh.io import output_file
+from plotly.subplots import make_subplots
+import sys
+from backtesting import Backtest
+sys.path.append('/home/qa/BlingTradePlatform/strategy')
+from src.common.constants import *
+from StrategyRepos.FirstBtStrategy import SmaCross
+
+class MomentumStrategy:
+    def __init__(self) -> None:
+        self.symboluniverse = MarketUniverse()
+        self.indicatorCalculator = IndicatorAdder()
+        self.dataframewindowfilter = DataWindowFilter
+
+granularity = "1d"
+#periodInString = "28d"
+start_date_to_download = '2024-12-30'
+end_date_to_download = '2025-03-25'
+filter_start_date = '2024-01-01'
+filter_end_date = '2024-09-29'
+filter_start_time = '09:20::00'
+filter_end_time  = '15:30:00'
+STRATEGY_TYPE = SmaCross
+candleDownloadChart = False
+CSV_FILE_PATH = GlobalConstants.historicMarketData_csv_dir
+if __name__ == "__main__":
+    strategy = MomentumStrategy()
+    current_date = Utils.get_current_date()
+    previous_date = Utils.calculate_dates(current_date, 1, 1)['past_date']
+    
+    symbolListDataframe = strategy.symboluniverse.optionBackedEquityUniverse()
+    symbolToSectorDict = strategy.symboluniverse.classify_stocks_to_sector()
+    symbolListDataframe['Sector'] = symbolListDataframe['Symbol'].apply(lambda x :  symbolToSectorDict[x] if symbolToSectorDict.get(x) else "Others")
+    dirname = GlobalConstants.historicMarketData_dir
+    Utils.createDirectory(dirname)
+    Utils.save_df_to_csv(symbolListDataframe, dirname, 'equitySchema.csv')
+    
+    symbolList = Utils.panda_series_toList_converter(symbolListDataframe['Symbol'])
+    #print(symbolList)
+
+
+    #Utils.download_Mkt_Data_For_Symbols_With_Granularity_And_SaveFilesToDirectory(symbolList, start_date_to_download, granularity, periodInString, dirname, ".csv")
+    #Utils.download_Mkt_Data_For_Symbols_With_Start_And_EndDate_With_Granularity_And_SaveFilesToDirectory(symbolList, start_date_to_download, end_date_to_download, granularity, dirname, ".csv")
+
+        #print(symbolDataframe.head(10))
+        
+print(symbolList)
+start_date_to_read= '2014-01-01'
+end_date_to_read = '2025-03-28'
+filterTypeDays = 11
+print(symbolToSectorDict)
+symbolCount = 0
+allSymbologyDataFrame = []
+for symbol in symbolList:
+    print(symbolCount)
+    symbolCount += 1
+    #symbolDataframe = Utils.readCsv(symbol, granularity, start_date_to_download, dirname, ".csv",  periodInString)
+    symbolDataframe = Utils.readCsv_from_startdate_enddate(symbol, granularity, start_date_to_read, end_date_to_read, dirname, ".csv")
+    # from above symbolDataframe only keep the entries which are 6 rows apart from each other
+    symbolDataframe = Utils.filter_dataframe_by_days(symbolDataframe, filterTypeDays)
+    
+    if symbolDataframe.empty:
+        continue
+    
+    symbolDataframe = Utils.convert_yf_datetime_to_pandas_datetime(symbolDataframe)
+
+    Utils.convert_datetime64_to_user_format(symbolDataframe['Date'], '%d-%m-%Y %H:%M:%S')
+    symbolDataframe['Time'] = Utils.convert_datetime64_to_user_format(symbolDataframe['Date'], '%H:%M:%S')
+    symbolDataframe = Utils.convert_yf_datetime_to_pandas_datetime(symbolDataframe)
+    symbolDataframe['E10'] = symbolDataframe['Close'].ewm(span=10, adjust=False).mean()
+    symbolDataframe['E21'] = symbolDataframe['Close'].ewm(span=21, adjust=False).mean()
+    symbolDataframe['E50'] = symbolDataframe['Close'].ewm(span=50, adjust=False).mean()
+    symbolDataframe.dropna(inplace=True)
+    symbolDataframe['isCloseAbove10'] = symbolDataframe.apply(lambda x : 1 if x['Close'] > x['E10'] else -1, axis=1)
+    symbolDataframe['isCloseAbove21'] = symbolDataframe.apply(lambda x : 1 if x['Close'] > x['E21'] else -1, axis=1)
+    symbolDataframe['isCloseAbove50'] = symbolDataframe.apply(lambda x : 1 if x['Close'] > x['E50'] else -1, axis=1)
+    symbolDataframe['isE10AboveE21'] = symbolDataframe.apply(lambda x : 1 if x['E10'] > x['E21'] else -1, axis=1)
+    symbolDataframe['isE21AboveE50'] = symbolDataframe.apply(lambda x : 1 if x['E21'] > x['E50'] else -1, axis=1)
+    symbolDataframe['isE10AboveE50'] = symbolDataframe.apply(lambda x : 1 if x['E10'] > x['E50'] else -1, axis=1)
+    symbolDataframe['TotalValue'] = symbolDataframe['isCloseAbove10'] + symbolDataframe['isCloseAbove21'] + \
+                                        symbolDataframe['isCloseAbove50'] + symbolDataframe['isE10AboveE21'] + \
+                                            symbolDataframe['isE21AboveE50'] + symbolDataframe['isE10AboveE50']
+    symbolDataframe['Symbol'] = symbol
+    symbolDataframe['ReturnChange'] = ((symbolDataframe['Close'].shift(3) - symbolDataframe['Close'].shift(23))/symbolDataframe['Close'].shift(23)) * 100
+    symbolDataframe.dropna(inplace=True)
+    symbolDataframe['PRET'] = symbolDataframe.apply(lambda x : 1 if x['ReturnChange'] > 0 else -1, axis=1)
+    symbolDataframe['Direction'] = symbolDataframe['Close'].diff()
+    symbolDataframe['PositivePercentage'] = symbolDataframe['Direction'].shift(3).rolling(window=20).apply(lambda x: len([+1 for i in x if i > 0]))
+    symbolDataframe['NegativePercentage'] = symbolDataframe['Direction'].shift(3).rolling(window=20).apply(lambda x: len([+1 for i in x if i < 0]))
+    symbolDataframe['NoChange'] = symbolDataframe['Direction'].shift(3).rolling(window=20).apply(lambda x: len([+1 for i in x if i == 0]))
+    symbolDataframe['Sector'] = symbolToSectorDict[symbol]
+    symbolDataframe['FIPValue1'] = symbolDataframe['PRET'] * ((symbolDataframe['NegativePercentage']/20)- (symbolDataframe['PositivePercentage']/20))
+    # for the above symbolDataframe create a new column called FIPValue whose value is symbolDataframe['NegativePercentage']/57 if PRET - -1 else symbolDataframe['PositivePercentage']/57
+    symbolDataframe['FIPValue'] = symbolDataframe.apply(lambda x : x['NegativePercentage']/20 if x['PRET'] == -1 else x['PositivePercentage']/20, axis=1)
+    #print(symbolDataframe.tail(50).loc[:, ['Close', 'Direction',  'PRET', 'PositivePercentage', 'NegativePercentage', 'FIPValue']])
+    if symbolDataframe.empty:
+        continue
+    
+    allSymbologyDataFrame.append(symbolDataframe)
+
+# pp = (symbolDataframe.tail(50).loc[:, ['Symbol', 'Close', 'ReturnChange', 'PRET', 'Direction', 'PositivePercentage', 'NegativePercentage', 'FIPValue']])
+# pp.reset_index(drop=True, inplace=True)
+# pp
+# print(symbolDataframe['FIPValue'].max())
+# # print(symbolDataframe['FIPValue'].min())
+
+## remove all the rows with FIPValue as NaN from allSymbologyDataFrame
+for i in range(allSymbologyDataFrame.__len__()):
+    allSymbologyDataFrame[i] = allSymbologyDataFrame[i][~allSymbologyDataFrame[i]['FIPValue'].isna()]
+    allSymbologyDataFrame[i].reset_index(drop=True, inplace=True)
+
+dates = allSymbologyDataFrame[0].iloc[0:]['Date'].to_list()
+# AllDates = [date.strftime('%d-%m-%Y') for date in dates]
+# AllDates
+for i in range(allSymbologyDataFrame.__len__()):
+    #allSymbologyDataFrame[i]['StrDate'] = allSymbologyDataFrame[i]['Date'].dt.strftime('%Y-%m-%d').copy()
+    # Use .loc to avoid the warning about setting a value on a copy of a slice
+    allSymbologyDataFrame[i].loc[:, 'StrDate'] = allSymbologyDataFrame[i]['Date'].dt.strftime('%Y-%m-%d')
+    
+    allSymbologyDataFrame[i].reset_index(drop=True, inplace=True)
+
+
+# For allSymbologyDataFrame at index 0, get the row with the Date value as 'YYYY-MM-DD' format
+date_to_find = '2021-01-01'
+AllDates = [date.strftime('%Y-%m-%d') for date in dates]
+
+print(AllDates)
+totalDatesToRun = AllDates.__len__()
+startDateForRun = '2014-12-10'
+endDateTillRun = '2027-03-27'
+forwardValue = 1 # indicates how many candles to move forward by....
+totalScoreFilter = 5
+# Find the next nearest startDateForRun entry value in AllDates and its index
+nearest_start_date_index = next((i for i, date in enumerate(AllDates) if date >= startDateForRun), None)
+nearest_start_date = AllDates[nearest_start_date_index] if nearest_start_date_index is not None else None
+
+nearest_end_date_index = next((i for i, date in enumerate(AllDates) if date >= endDateTillRun), None)
+nearest_end_date = AllDates[nearest_end_date_index] if nearest_end_date_index is not None else None
+
+if nearest_end_date_index is None:
+    nearest_end_date_index = totalDatesToRun - 1
+    nearest_end_date = AllDates[nearest_end_date_index]
+#print(nearest_start_date)
+#print(nearest_end_date)
+cashInPortfolio = 100000
+portfolioList = []
+symbolToPriceDict = {}
+symbolPurchasedToQtyDict = {}
+weeklyPortfolioValueDf = pd.DataFrame(columns=['Date', 'AccountValue'])
+
+def getQtyPurchasedForSymbol(symbol):
+    if symbolPurchasedToQtyDict.get(symbol) is None:
+        return 0
+    return symbolPurchasedToQtyDict[symbol]
+
+def get_portfolio_value():
+    totalPortfolioValue = 0
+    for symbol in portfolioList:
+        totalPortfolioValue += symbolToPriceDict[symbol] * getQtyPurchasedForSymbol(symbol)
+    return totalPortfolioValue
+
+def get_account_value():
+    return (get_portfolio_value() + cashInPortfolio)
+    
+for runDate in range(nearest_start_date_index, nearest_end_date_index-1, forwardValue):
+    current_run_date = AllDates[runDate]
+    next_run_date = AllDates[runDate + 1]
+    portfolioSymbolsToAdd = []
+    currentSymbolToPriceDict= {}
+    symbolDf1 = pd.DataFrame(columns=['Symbol', 'TotalScore', 'FIPScore'])
+
+    for symbolDf  in allSymbologyDataFrame:
+        filtered_df = Utils.filter_panda_df_in_range_constraint(symbolDf, 'StrDate', current_run_date, current_run_date)
+        
+        if filtered_df.empty:
+            continue
+    
+        symbolName = filtered_df['Symbol'].iloc[0]
+        currentSymbolPrice = filtered_df['Close'].iloc[0]
+        currentSymbolToPriceDict[symbolName] = currentSymbolPrice
+        
+        meanTotalScoreValue = filtered_df['TotalValue'].mean()
+        
+        FIPValue = filtered_df['FIPValue'].iloc[0]
+        FIPValue1 = filtered_df['FIPValue1'].iloc[0]
+
+        # append the symbolDf above to columns 'Symbol' mapped to symbolName, TotalScore to meanTotalScoreValue and FIPValue to FIPValue1
+        dfx = pd.DataFrame({
+            'Symbol': [symbolName],
+            'TotalScore': [meanTotalScoreValue],
+            'FIPScore' : [FIPValue1]
+        })
+        
+        #symbolDf1 = pd.concat([symbolDf1, dfx], ignore_index=True)
+        # Ensure that the DataFrame being concatenated is not empty
+        # if not dfx.empty and not dfx.isna().all(axis=None):
+        #     symbolDf1 = pd.concat([symbolDf1, dfx], ignore_index=True)
+            # Ensure that the DataFrame being concatenated is not empty and does not contain all-NA rows
+        if symbolDf1.empty:
+            symbolDf1 = dfx
+        else:
+            if not dfx.empty and not dfx.isna().all(axis=None):
+                symbolDf1 = pd.concat([symbolDf1, dfx.dropna(how='all')], ignore_index=True)
+
+    
+    # sort symbolDf1 first based on TotalScore descending then sort on FIPScore ascending
+    symbolDf1 = symbolDf1.sort_values(by=['TotalScore', 'FIPScore'], ascending=[False, True])
+
+    # from above symbolDf1 get the top 10 symbolNames
+    portfolioSymbolsToAdd = symbolDf1.head(6)['Symbol'].tolist()
+    #portfolioSymbolsToAdd.extend(top_symbols)
+    
+    #print(portfolioSymbolsToAdd)
+    # find common elements between portfolioList and portfolioSymbolsToAdd 
+    commonSymbols = list(set(portfolioList) & set(portfolioSymbolsToAdd))
+    symbolsToLiquidate = list(set(portfolioList) - set(commonSymbols))
+    symbolsToAdd = list(set(portfolioSymbolsToAdd) - set(commonSymbols))
+            
+    for symbol in symbolsToLiquidate:
+        cashInPortfolio += currentSymbolToPriceDict[symbol] * getQtyPurchasedForSymbol(symbol)
+        cashInPortfolio -= currentSymbolToPriceDict[symbol] * getQtyPurchasedForSymbol(symbol) * 0.001
+        portfolioList.remove(symbol)
+    
+
+    if symbolsToAdd.__len__() > 0:
+        totalSymbols = len(symbolsToAdd)
+        cashPerStock = cashInPortfolio/len(symbolsToAdd)
+        # if cashPerStock > 5000:
+        #     cashPerStock = 5000
+        for symbol in symbolsToAdd:
+            if totalSymbols <= 0:
+                break
+            cashPerStock = cashInPortfolio/totalSymbols
+            stockQty = cashPerStock/currentSymbolToPriceDict[symbol]
+            symbolPurchasedToQtyDict[symbol] = stockQty
+            cashInPortfolio -= cashPerStock
+            cashInPortfolio -= cashPerStock * 0.001
+            totalSymbols -= 1                
+            portfolioList.append(symbol)
+
+    symbolToPriceDict = currentSymbolToPriceDict
+    df2 = pd.DataFrame({
+        'Date': [current_run_date],
+        'AccountValue': [get_account_value()]
+    })
+    if weeklyPortfolioValueDf.empty:
+        weeklyPortfolioValueDf = df2
+    else:
+        weeklyPortfolioValueDf = pd.concat([weeklyPortfolioValueDf, df2], ignore_index=True)
+
+    #print("Weekly date [" + current_run_date + "] " +  str(get_account_value()))
+
+#print(weeklyPortfolioValueDf)
+
+(weeklyPortfolioValueDf)
+weeklyPortfolioValueDf['Returns'] = weeklyPortfolioValueDf['AccountValue'].pct_change()
+
+# Calculate Drawdown
+weeklyPortfolioValueDf['CumulativeMax'] = weeklyPortfolioValueDf['AccountValue'].cummax()
+weeklyPortfolioValueDf['Drawdown'] = (weeklyPortfolioValueDf['AccountValue'] - weeklyPortfolioValueDf['CumulativeMax']) / weeklyPortfolioValueDf['CumulativeMax']
+weeklyPortfolioValueDf['RollingReturn'] = weeklyPortfolioValueDf['AccountValue'] / weeklyPortfolioValueDf['AccountValue'].iloc[0] - 1
+weeklyPortfolioValueDf['CumulativeMeanReturn'] = weeklyPortfolioValueDf['Returns'].expanding().mean()
+weeklyPortfolioValueDf['CumulativeStdReturn'] = weeklyPortfolioValueDf['Returns'].expanding().std()
+weeklyPortfolioValueDf['SharpeRatio'] = weeklyPortfolioValueDf['CumulativeMeanReturn'] / weeklyPortfolioValueDf['CumulativeStdReturn']
+weeklyPortfolioValueDf['ROMADRatio'] = ((weeklyPortfolioValueDf['AccountValue'] - 100000)/100000 )/ abs(weeklyPortfolioValueDf['Drawdown'])
+# Calculate Sharpe Ratio (assumes risk-free rate = 0, and daily data)
+#sharpe_ratio = weeklyPortfolioValueDf['Returns'].mean() / weeklyPortfolioValueDf['Returns'].std()
+
+# Calculate Max Drawdown
+#max_drawdown = weeklyPortfolioValueDf['Drawdown'].min()
+
+# Total Return for ROMAD
+#total_return = (weeklyPortfolioValueDf['AccountValue'].iloc[-1] / weeklyPortfolioValueDf['AccountValue'].iloc[0]) - 1
+#romad = total_return / abs(max_drawdown) if max_drawdown != 0 else np.nan
+
+# Add summary values to the DataFrame (repeated so it’s available per row)
+#weeklyPortfolioValueDf['SharpeRatio'] = sharpe_ratio
+#weeklyPortfolioValueDf['ROMAD'] = romad
+
+# Clean-up
+#weeklyPortfolioValueDf = weeklyPortfolioValueDf.drop(columns=['CumulativeMax'])
+#weeklyPortfolioValueDf.plot(x='Date', y='AccountValue', kind='line', title='Weekly Portfolio Value Over Time', xlabel='Week', ylabel='Portfolio Value', rot=45)
+# Create an interactive plot using plotly
+import plotly.express as px
+
+# Convert Week column to datetime for better plotting
+weeklyPortfolioValueDf['Date'] = pd.to_datetime(weeklyPortfolioValueDf['Date'])
+
+# Create an interactive line plot using plotly
+fig = px.line(
+    weeklyPortfolioValueDf,
+    x='Date',
+    y=['AccountValue'],
+    labels={'value': 'Metrics', 'Date': 'Date'},
+    title='Portfolio Metrics Over Time'
+)
+
+# Update layout for better readability
+fig.update_layout(
+    xaxis_title='Date',
+    yaxis_title='Metrics',
+    legend_title='Metrics',
+    xaxis_tickangle=-45
+)
+
+# Show the plot
+fig.show()
+
+# create a plot for drawdown over date
+drawdown_fig = px.line(
+    weeklyPortfolioValueDf,
+    x='Date',
+    y=['Drawdown'],
+    labels={'value': 'Drawdown', 'Date': 'Date'},
+    title='Portfolio Drawdown Over Time'
+)
+drawdown_fig.update_layout(
+    xaxis_title='Date',
+    yaxis_title='Drawdown',
+    legend_title='Metrics',
+    xaxis_tickangle=-45
+)
+drawdown_fig.show()
+
+# create similar plot for Sharpe Ratio and ROMADRatio
+
+# Plot Sharpe Ratio over time
+sharpe_ratio_fig = px.line(
+    weeklyPortfolioValueDf,
+    x='Date',
+    y=['SharpeRatio'],
+    labels={'value': 'Sharpe Ratio', 'Date': 'Date'},
+    title='Sharpe Ratio Over Time'
+)
+sharpe_ratio_fig.update_layout(
+    xaxis_title='Date',
+    yaxis_title='Sharpe Ratio',
+    legend_title='Metrics',
+    xaxis_tickangle=-45
+)
+sharpe_ratio_fig.show()
+
+# Plot ROMADRatio over time
+romad_ratio_fig = px.line(
+    weeklyPortfolioValueDf,
+    x='Date',
+    y=['ROMADRatio'],
+    labels={'value': 'ROMAD Ratio', 'Date': 'Date'},
+    title='ROMAD Ratio Over Time'
+)
+romad_ratio_fig.update_layout(
+    xaxis_title='Date',
+    yaxis_title='ROMAD Ratio',
+    legend_title='Metrics',
+    xaxis_tickangle=-45
+)
+romad_ratio_fig.show()
+
+
+
+import pandas as pd
+import numpy as np
+
+df = weeklyPortfolioValueDf.copy()
+df['Date'] = pd.to_datetime(df['Date'])
+df.set_index('Date', inplace=True)
+
+# 1. CAGR
+start_val = df['AccountValue'].iloc[0]
+end_val = df['AccountValue'].iloc[-1]
+weeks = len(df) - 1
+years = weeks / 24.0
+cagr = (end_val / start_val) ** (1 / years) - 1
+
+# Weekly returns
+weekly_returns = df['AccountValue'].pct_change().dropna()
+
+# 2. Max drawdown
+cum_max = df['AccountValue'].cummax()
+drawdown = df['AccountValue'] / cum_max - 1
+max_drawdown = drawdown.min()
+# find above max_drawdown week date
+max_drawdown_week = drawdown.idxmin()
+print(max_drawdown_week)
+
+# get all accountValue for df between two dates
+pp = df.loc[(df.index >= '2015-04-10') & (df.index <= '2016-02-29'), 'AccountValue']
+
+# Calculate the maximum duration of drawdown
+drawdown_periods = (drawdown != 0).astype(int).groupby((drawdown == 0).astype(int).cumsum()).cumsum()
+max_drawdown_duration = drawdown_periods.max()
+print(max_drawdown_duration)
+
+# 3. Max drawdown duration in weeks
+dd_start = (df['AccountValue'][:drawdown.idxmin()])[df['AccountValue'][:drawdown.idxmin()] == cum_max[:drawdown.idxmin()]].idxmax()
+dd_end = drawdown.idxmin()
+print(dd_start)
+print(dd_end)
+dd_duration_weeks = (dd_end - dd_start).days // 7
+
+# 4. Avg weekly return %
+avg_weekly_return = weekly_returns.mean()
+
+# 5. % positive weeks
+positive_weeks = (weekly_returns > 0).mean() * 100
+
+# 6. Best week return %
+best_week = weekly_returns.max() * 100
+
+# 7. Worst week return %
+worst_week = weekly_returns.min() * 100
+
+# 8. Weekly volatility
+weekly_vol = weekly_returns.std() * 100
+
+# Output
+results = {
+    "1. CAGR (%)": cagr * 100,
+    "2. Max Drawdown (%)": max_drawdown * 100,
+    "3. Max Drawdown Duration (weeks)": dd_duration_weeks,
+    "4. Avg Weekly Return (%)": avg_weekly_return * 100,
+    "5. % Positive Weeks": positive_weeks,
+    "6. Best Week Return (%)": best_week,
+    "7. Worst Week Return (%)": worst_week,
+    "8. Weekly Volatility (%)": weekly_vol
+}
+
+for k, v in results.items():
+    print(f"{k}: {v:.2f}")
+pp
