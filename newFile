@@ -443,3 +443,75 @@ results = {
 for k, v in results.items():
     print(f"{k}: {v:.2f}")
 pp
+
+
+lookbackPeriod = 3
+windowSize = 20
+
+ewmWindow1 = 10
+ewmWindow2 = 21
+ewmWindow3 = 50
+# Define the ranges for the parameters
+# lookbackPeriod_range = range(3, 8)
+# windowSize_range = range(20, 46)
+
+# ewmWindow1_range = range(5, 21)
+# ewmWindow2_range = range(21, 51)
+# ewmWindow3_range = range(50, 71)
+
+lookbackPeriod_range = range(3, 5)
+windowSize_range = range(20, 22)
+
+ewmWindow1_range = range(5, 7)
+ewmWindow2_range = range(21, 23)
+ewmWindow3_range = range(50, 52)
+
+# Function to process a single combination of parameters
+def process_combination(params):
+    lookbackPeriod, windowSize, ewmWindow1, ewmWindow2, ewmWindow3 = params
+    allSymbologyDataFrame = []
+    for symbol in symbolList:
+        symbolDataframe = Utils.readCsv_from_startdate_enddate(symbol, granularity, start_date_to_read, end_date_to_read, dirname, ".csv")
+        symbolDataframe = Utils.filter_dataframe_by_days(symbolDataframe, filterTypeDays)
+        
+        if symbolDataframe.empty:
+            continue
+        symbolDataframe = Utils.convert_yf_datetime_to_pandas_datetime(symbolDataframe)
+        Utils.convert_datetime64_to_user_format(symbolDataframe['Date'], '%d-%m-%Y %H:%M:%S')
+        symbolDataframe['Time'] = Utils.convert_datetime64_to_user_format(symbolDataframe['Date'], '%H:%M:%S')
+        symbolDataframe['E' + str(ewmWindow1)] = symbolDataframe['Close'].ewm(span=ewmWindow1, adjust=False).mean()
+        symbolDataframe['E' + str(ewmWindow2)] = symbolDataframe['Close'].ewm(span=ewmWindow2, adjust=False).mean()
+        symbolDataframe['E' + str(ewmWindow3)] = symbolDataframe['Close'].ewm(span=ewmWindow3, adjust=False).mean()
+        symbolDataframe.dropna(inplace=True)
+        symbolDataframe['isCloseAbove' + str(ewmWindow1)] = symbolDataframe.apply(lambda x: 1 if x['Close'] > x['E' + str(ewmWindow1)] else -1, axis=1)
+        symbolDataframe['isCloseAbove' + str(ewmWindow2)] = symbolDataframe.apply(lambda x: 1 if x['Close'] > x['E' + str(ewmWindow2)] else -1, axis=1)
+        symbolDataframe['isCloseAbove' + str(ewmWindow3)] = symbolDataframe.apply(lambda x: 1 if x['Close'] > x['E' + str(ewmWindow3)] else -1, axis=1)
+        symbolDataframe['isE' + str(ewmWindow1) + 'AboveE' + str(ewmWindow2)] = symbolDataframe.apply(lambda x: 1 if x['E' + str(ewmWindow1)] > x['E' + str(ewmWindow2)] else -1, axis=1)
+        symbolDataframe['isE' + str(ewmWindow2) + 'AboveE' + str(ewmWindow3)] = symbolDataframe.apply(lambda x: 1 if x['E' + str(ewmWindow2)] > x['E' + str(ewmWindow3)] else -1, axis=1)
+        symbolDataframe['isE' + str(ewmWindow1) + 'AboveE' + str(ewmWindow3)] = symbolDataframe.apply(lambda x: 1 if x['E' + str(ewmWindow1)] > x['E' + str(ewmWindow3)] else -1, axis=1)
+        symbolDataframe['TotalValue'] = symbolDataframe['isCloseAbove' + str(ewmWindow1)] + symbolDataframe['isCloseAbove' + str(ewmWindow2)] + \
+                                        symbolDataframe['isCloseAbove' + str(ewmWindow3)] + symbolDataframe['isE' + str(ewmWindow1) + 'AboveE' + str(ewmWindow2)] + \
+                                        symbolDataframe['isE' + str(ewmWindow2) + 'AboveE' + str(ewmWindow3)] + symbolDataframe['isE' + str(ewmWindow1) + 'AboveE' + str(ewmWindow3)]
+        symbolDataframe['Symbol'] = symbol
+        symbolDataframe['ReturnChange'] = ((symbolDataframe['Close'].shift(lookbackPeriod) - symbolDataframe['Close'].shift(windowSize + lookbackPeriod)) / symbolDataframe['Close'].shift(windowSize + lookbackPeriod)) * 100
+        symbolDataframe.dropna(inplace=True)
+        symbolDataframe['PRET'] = symbolDataframe.apply(lambda x: 1 if x['ReturnChange'] > 0 else -1, axis=1)
+        symbolDataframe['Direction'] = symbolDataframe['Close'].diff()
+        symbolDataframe['PositivePercentage'] = symbolDataframe['Direction'].shift(lookbackPeriod).rolling(window=windowSize).apply(lambda x: len([+1 for i in x if i > 0]))
+        symbolDataframe['NegativePercentage'] = symbolDataframe['Direction'].shift(lookbackPeriod).rolling(window=windowSize).apply(lambda x: len([+1 for i in x if i < 0]))
+        symbolDataframe['NoChange'] = symbolDataframe['Direction'].shift(lookbackPeriod).rolling(window=windowSize).apply(lambda x: len([+1 for i in x if i == 0]))
+        symbolDataframe['Sector'] = symbolToSectorDict[symbol]
+        symbolDataframe['FIPValue'] = symbolDataframe['PRET'] * ((symbolDataframe['NegativePercentage'] / windowSize) - (symbolDataframe['PositivePercentage'] / windowSize))
+        symbolDataframe.dropna(inplace=True)
+        if symbolDataframe.empty:
+            continue
+        allSymbologyDataFrame.append(symbolDataframe)
+    return allSymbologyDataFrame
+
+# Generate all combinations of parameters
+parameter_combinations = list(product(lookbackPeriod_range, windowSize_range, ewmWindow1_range, ewmWindow2_range, ewmWindow3_range))
+
+# Use ProcessPoolExecutor to parallelize the processing
+with ProcessPoolExecutor(max_workers=15) as executor:
+    #results = list(executor.map(lambda params: (params, process_combination(params)), parameter_combinations))
+    results = list(executor.map(process_combination, parameter_combinations))
