@@ -515,3 +515,39 @@ parameter_combinations = list(product(lookbackPeriod_range, windowSize_range, ew
 with ProcessPoolExecutor(max_workers=15) as executor:
     #results = list(executor.map(lambda params: (params, process_combination(params)), parameter_combinations))
     results = list(executor.map(process_combination, parameter_combinations))
+
+
+
+    atr = AverageTrueRange(high=symbolDataframe['High'], low=symbolDataframe['Low'], close=symbolDataframe['Close'], window=2).average_true_range()
+    sum_atr = atr.rolling(window=2).sum()
+    high_max = symbolDataframe['High'].rolling(window=2).max()
+    low_min = symbolDataframe['Low'].rolling(window=2).min()
+    ci = 100 * np.log10(sum_atr / (high_max - low_min)) / np.log10(2)
+    symbolDataframe['choppiness'] = ci
+
+        if filtered_df['Direction'].iloc[0] > 0:
+            advanceDecline += 1
+
+
+from matplotlib import pyplot as plt
+
+# Filter data for the period from 2015 to February 2017
+filtered_df = AdvanceDeclineDf[(AdvanceDeclineDf['Date'] >= '2024-01-01') & (AdvanceDeclineDf['Date'] <= '2025-02-28')]
+
+# Plotting
+plt.figure(figsize=(10, 6))
+plt.plot(filtered_df['Date'], filtered_df['TotalAdvance'], marker='o', label='Total Advance')
+
+# Adding labels and title
+plt.xlabel('Date')
+plt.ylabel('Total Advance')
+plt.title('Total Advance (2015 to February 2017)')
+plt.grid(True)
+plt.legend()
+
+# Rotate x-axis labels for better readability
+plt.xticks(rotation=45)
+
+# Show the plot
+plt.tight_layout()
+plt.show()
